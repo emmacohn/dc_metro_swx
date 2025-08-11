@@ -1,0 +1,520 @@
+---
+title: "DMV Recession Watch"
+format: html
+editor: visual
+---
+
+```{r Libraries, message=FALSE}
+
+library(tidyverse)
+library(epiextractr)
+library(epidatatools)
+library(realtalk)
+library(labelled)
+library(janitor)
+library(openxlsx)
+library(here)
+library(zoo)
+
+```
+
+##### Load/clean data
+
+```{r Load data}
+
+#Load CPI data for inflation adjusting
+cpi <- cpi_u_annual
+cpi2024 <- cpi$cpi_u[cpi$year==2024]
+
+# Create basic dataframe
+basic <- load_basic(2009:2025, 
+                    year, month, basicwgt, orgwgt, finalwgt,
+                    minsamp, statefips, cbsafips, wage, hoursu1i,
+                    age, female, wbhao, educ, selfinc,
+                    selfemp, lfstat, dlfstat, unemp, emp,
+                    cow1, pubfed, unempdur, citistat) |> 
+  # Create date in yyyy-mm-dd format
+  mutate(date = ymd(paste0(year,'-', month,'-1'))) |> 
+  # Create foreign-born variable
+  mutate(native = case_when(citistat %in% c(1:3) ~ 1,
+                              citistat %in% c(4,5) ~ 0)) |> 
+  # Age bin variable
+  mutate(age_bin = case_when(age %in% c(16:24) ~ 1, 
+                             age %in% c(25:54) ~ 2,
+                             age >=55 ~ 3)) |> 
+  add_value_labels(native = c('Native' = 1, 'Foreign-born'=0),
+                  age_bin = c('16–24' = 1, '25–54'=2, '55+'=3))
+
+# Create org dataframe
+org <- basic |>
+  filter(year <= 2024) |> 
+  #Keep ORG months only
+  filter(minsamp %in% c(4,8)) |> 
+  # Workers 16+, employed, not self-employed or self-incorporated.
+  filter(age>=16, lfstat == 1, selfinc!=1 & !is.na(selfinc),
+         selfemp!=1 & !is.na(selfemp)) %>% 
+  # Create variable for full-time part time status
+  mutate(ftpt = ifelse(hoursu1i>=35, yes=1, no=0)) |> 
+  # Join CPI-U data
+  left_join(cpi, by='year') |> 
+  # inflation adjust wage data
+  mutate(realwage = wage*(cpi2024/cpi_u))
+
+```
+
+##### Sample size checks
+
+```{r Sample size check}
+
+basic_samp <- basic |> 
+  summarize(n=n(),
+            bwgt_n = sum(basicwgt, na.rm=TRUE),
+            fwgt_n = sum(finalwgt, na.rm=TRUE),
+            .by=c(year, month))
+
+basic_urate <- basic |> 
+  filter(lfstat %in% c(1,2)) |> 
+  summarize(urate = weighted.mean(unemp, w=basicwgt, na.rm=TRUE),
+            n=n(),
+            .by=c(year, month))
+
+org_samp <- basic |> 
+  # keep ORG only
+  filter(minsamp %in% c(4,8)) |> 
+  filter(cbsafips==47900) |> 
+  summarize(n=n(),
+            wgt_n = sum(orgwgt, na.rm=TRUE),
+            .by=c(year, month))
+```
+
+##### Economic Indicators
+
+```{r DMV indicators}
+
+# 47900 Washington-Arlington-Alexandria, DC-VA-MD-WV
+# <https://www2.census.gov/programs-surveys/cps/methodology/2015%20Geography%20Cover.pdf:>
+
+emp_indicators_dmv <- basic |> 
+  filter(lfstat %in% c(1,2), cbsafips==47900) |>
+  summarize(
+    # Labor force
+    labforce = sum(basicwgt, na.rm=TRUE),
+    # Employment
+    employed = sum(emp * basicwgt, na.rm=TRUE),
+    unemployed = sum(unemp * basicwgt, na.rm=TRUE),
+    # Urate
+    urate = unemployed / labforce,
+    n=n(),
+    .by=c(date)) |> 
+    # 3-month emp stats
+    mutate(urate3mos = rollmean(urate, k=3, align = 'right', na.pad=TRUE),
+    emp3mos = rollmean(employed, k=3, align = 'right', na.pad=TRUE),
+    unemp3mos = rollmean(unemployed, k=3, align = 'right', na.pad=TRUE)
+    )
+
+# DC area
+emp_indicators_dc <- basic |> 
+  filter(age>=16, lfstat %in% c(1,2), statefips==11) |>
+    summarize(
+    labforce = sum(basicwgt, na.rm=TRUE),
+    employed = sum(emp * basicwgt, na.rm=TRUE),
+    unemployed = sum(unemp * basicwgt, na.rm=TRUE),
+    urate = unemployed / labforce,
+    n=n(),
+    .by=c(date)) |> 
+    # 3-month emp stats
+    mutate(urate3mos = rollmean(urate, k=3, align = 'right', na.pad=TRUE),
+    emp3mos = rollmean(employed, k=3, align = 'right', na.pad=TRUE),
+    unemp3mos = rollmean(unemployed, k=3, align = 'right', na.pad=TRUE)
+    )
+
+```
+
+##### Prime age indicators
+
+```{r}
+
+# Prime age
+indicators_age_dmv <- basic |> 
+  filter(lfstat %in% c(1,2), cbsafips==47900, age_bin %in% c(1:3)) |>
+  mutate(age_bin = to_factor(age_bin)) |> 
+  summarize(
+    # Labor force
+    labforce = sum(basicwgt, na.rm=TRUE),
+    # Employment
+    employed = sum(emp * basicwgt, na.rm=TRUE),
+    unemployed = sum(unemp * basicwgt, na.rm=TRUE),
+    # Urate
+    urate = unemployed / labforce,
+    n=n(),
+    .by=c(date, age_bin)) |> 
+    # 3-month emp stats
+    mutate(urate3mos = rollmean(urate, k=3, align = 'right', na.pad=TRUE),
+    emp3mos = rollmean(employed, k=3, align = 'right', na.pad=TRUE),
+    unemp3mos = rollmean(unemployed, k=3, align = 'right', na.pad=TRUE),
+    .by=age_bin
+    )
+
+indicators_age_dc <- basic |> 
+  filter(lfstat %in% c(1,2), statefips==11, age_bin %in% c(1:3)) |>
+  mutate(age_bin = to_factor(age_bin)) |> 
+  summarize(
+    # Labor force
+    labforce = sum(basicwgt, na.rm=TRUE),
+    # Employment
+    employed = sum(emp * basicwgt, na.rm=TRUE),
+    unemployed = sum(unemp * basicwgt, na.rm=TRUE),
+    # Urate
+    urate = unemployed / labforce,
+    n=n(),
+    .by=c(date, age_bin)) |> 
+    # 3-month emp stats
+    mutate(urate3mos = rollmean(urate, k=3, align = 'right', na.pad=TRUE),
+    emp3mos = rollmean(employed, k=3, align = 'right', na.pad=TRUE),
+    unemp3mos = rollmean(unemployed, k=3, align = 'right', na.pad=TRUE),
+    .by=age_bin
+    )
+
+```
+
+##### Federal worker analysis
+
+```{r Federal workers}
+
+fed_workers <- basic |> 
+  filter(age>=16, cbsafips==47900, pubfed==1, emp==1) |> 
+    summarize(
+    # Employment
+    emp = sum(emp * basicwgt, na.rm=TRUE),
+    n=n(),
+    .by=c(date)) |> 
+    # 3-month emp stats
+    mutate(emp3mos = rollmean(emp, k=3, align = 'right', na.pad=TRUE)) |> 
+    mutate(label = 'Federal workers, 16+, cbsafips 47900')
+
+# fed_workers2 <- basic |> 
+# filter(age>=16, cbsafips==47900, pubfed==1) |>   
+#   mutate(lfstat = to_factor(lfstat)) |> 
+#   summarize(
+#   n=n(),
+#   wgt_n = sum(basicwgt, na.rm=TRUE),
+#     .by=c(lfstat, date)) |> 
+#   # pivot_wider(id_cols = date, names_from = lfstat, values_from = c(wgt_n, n)) |>
+#    mutate(label = 'Federal workers, 16+, cbsafips 47900')
+
+```
+
+##### Population growth
+
+```{r Pop growth}
+ 
+pop_dmv <- basic |> 
+  filter(cbsafips==47900) |> 
+  summarize(pop = sum(finalwgt, na.rm=TRUE),
+            pop16plus = sum(basicwgt, na.rm=TRUE),
+            n = n(),
+            .by = c(date)) |> 
+  # Calculate yoy pop growth
+  mutate(pop_growth = pop/lag(pop, n=1L)-1,
+         # replace NA with 0
+         pop_growth = replace_na(pop_growth, 0)) |> 
+  mutate(label = 'All')
+
+immig_pop_dmv <- basic |> 
+  filter(cbsafips==47900) |>
+  mutate(native = to_factor(native)) |> 
+  summarize(pop = sum(finalwgt, na.rm=TRUE),
+            pop16plus = sum(basicwgt, na.rm=TRUE),
+            n=n(),
+            .by = c(date, native)) |> 
+  # Calculate shares
+  mutate(pop_share = pop/sum(pop),
+         .by = c(date)) |>
+  # Calculate yoy pop growth
+  mutate(pop_growth = pop/lag(pop, n=1L)-1,
+         # replace NA with 0
+         pop_growth = replace_na(pop_growth, 0),
+         .by=native) |> 
+    rename(label = native)
+
+# DC population stats
+
+pop_dc <- basic |> 
+  filter(statefips==11) |> 
+  summarize(pop16plus = sum(basicwgt, na.rm=TRUE),
+            pop = sum(finalwgt, na.rm=TRUE),
+            n = n(),
+            .by = c(date)) |> 
+  # Calculate yoy pop growth
+  mutate(pop_growth = pop/lag(pop, n=1L)-1,
+         # replace NA with 0
+         pop_growth = replace_na(pop_growth, 0))|> 
+  mutate(label = 'All')
+
+
+immig_pop_dc <- basic |> 
+  filter(statefips==11) |> 
+  mutate(native = to_factor(native)) |> 
+  summarize(pop = sum(finalwgt, na.rm=TRUE),
+            pop16plus = sum(basicwgt, na.rm=TRUE),
+            n=n(),
+            .by = c(date, native)) |> 
+  # Calculate shares
+  mutate(pop_share = pop/sum(pop),
+         .by = c(date)) |>
+  # Calculate yoy pop growth
+  mutate(pop_growth = pop/lag(pop, n=1L)-1,
+         # replace NA with 0
+         pop_growth = replace_na(pop_growth, 0),
+         .by=native) |> 
+    rename(label = native)
+
+# # Sample plot. Run the above immig_pop dataframe without reshaping to create plot
+# ggplot(immig_pop, aes(x=date, y=cumGrowth, color=native))+
+#   geom_line()
+
+
+```
+
+##### Wage analysis
+
+```{r Wage analysis}
+
+# Workers 16+, employed, not self-employed or self-incorporated. ft+pt
+wage_analysis_func_dmv <- function(.data, group_cols) {
+  .data %>%
+    filter(realwage > 0) |> 
+    filter(cbsafips==47900) |> 
+    # turn grouping vars into strings for legibility
+    mutate(across(group_cols, ~to_factor(.x))) |> 
+    reframe(
+      avgwage = weighted.mean(realwage, wt = orgwgt/12, na.rm = TRUE),
+      medwage = interpolated_median(realwage, bin_size = 0.25, w = orgwgt/12),
+      wgt_n = sum(orgwgt/12, na.rm = TRUE),
+      n = n(),
+      .by = group_cols
+    )
+}
+
+# Workers 16+, employed, not self-employed or self-incorporated. ft+pt
+wage_analysis_func_dc <- function(.data, group_cols) {
+  .data %>%
+    filter(realwage > 0) |> 
+    filter(statefips==11) |> 
+    # turn grouping vars into strings for legibility
+    mutate(across(group_cols, ~to_factor(.x))) |> 
+    reframe(
+      avgwage = weighted.mean(realwage, wt = orgwgt/12, na.rm = TRUE),
+      medwage = interpolated_median(realwage, bin_size = 0.25, w = orgwgt/12),
+      wgt_n = sum(orgwgt/12, na.rm = TRUE),
+      n = n(),
+      .by = group_cols
+    )
+}
+
+group_sets <- list(
+  year = c('year'),
+  year_race      = c('year', 'wbhao'),
+  year_gender    = c('year', 'female'),
+  year_educ      = c('year', 'educ'),
+  year_native    = c('year', 'native'))
+
+```
+
+##### Dlfstat
+
+```{r dlfstat}
+
+# Detailed labor force status of all workers
+detailed_lfstat <- basic |> 
+  filter(cbsafips==47900, age>=16) |>
+  mutate(dlfstat = to_factor(dlfstat)) |> 
+  summarize(
+    wgt_n = sum(basicwgt, na.rm=TRUE),
+    n=n(),
+    .by=c(date, dlfstat)) |>
+  # Remove missing values
+  filter(!is.na(dlfstat)) |> 
+  # Calculate shares
+  mutate(share = wgt_n/sum(wgt_n),
+         .by = c(date)) |> 
+  pivot_wider(id_cols = c(date), 
+              names_from = dlfstat,
+              values_from = c(share, wgt_n, n))
+
+```
+
+##### Final tables for export
+
+```{r Final tables}
+
+indicators_dmv_final <- basic |> 
+  filter(cbsafips==47900) |> 
+  summarize(pop16plus = sum(basicwgt, na.rm=TRUE),
+            pop = sum(finalwgt, na.rm=TRUE),
+            .by = c(date))|> 
+  left_join(emp_indicators_dmv) 
+
+indicators_dc_final <- basic |> 
+  filter(statefips==11) |> 
+  summarize(pop16plus = sum(basicwgt, na.rm=TRUE),
+            pop = sum(finalwgt, na.rm=TRUE),
+            .by = c(date))|> 
+  left_join(emp_indicators_dc) 
+
+indicators_age_dmv_final <- basic |> 
+  filter(cbsafips==47900, age_bin %in% (1:3)) |> 
+  mutate(age_bin = to_factor(age_bin)) |> 
+  summarize(pop16plus = sum(basicwgt, na.rm=TRUE),
+            .by = c(date, age_bin)) |>
+  left_join(indicators_age_dmv, by=c('date', 'age_bin')) |> 
+  pivot_wider(id_cols = c(date), names_from = age_bin, 
+              values_from = c(pop16plus, labforce, employed, unemployed,
+              urate, n, urate3mos, emp3mos, unemp3mos))
+
+indicators_age_dc_final <- basic |> 
+  filter(statefips==11, age_bin %in% (1:3)) |> 
+    mutate(age_bin = to_factor(age_bin)) |> 
+  summarize(pop16plus = sum(basicwgt, na.rm=TRUE),
+            .by = c(date, age_bin)) |>
+  left_join(indicators_age_dc, by=c('date', 'age_bin'))  |> 
+  pivot_wider(id_cols = c(date), names_from = age_bin, 
+              values_from = c(pop16plus, labforce, employed, unemployed,
+              urate, n, urate3mos, emp3mos, unemp3mos))
+
+
+# Population dynamics by immigration status
+pop_dynamics_dmv <- bind_rows(pop_dmv, immig_pop_dmv) |> 
+  pivot_wider(id_cols = c(date), 
+              names_from = label,
+              values_from = c(pop, pop_growth, pop_share, pop16plus, n)) |> 
+  clean_names()
+
+
+# Population dynamics by immigration status
+pop_dynamics_dc <- bind_rows(pop_dc, immig_pop_dc) |> 
+  pivot_wider(id_cols = c(date), 
+              names_from = label,
+              values_from = c(pop, pop_growth, pop_share, pop16plus, n)) |> 
+  clean_names()
+
+# Table of all wage analyses
+dmv_wages_all <- map(names(group_sets), function(nm) {
+  df <- wage_analysis_func(org, group_sets[[nm]])
+  df$grouping <- nm
+  df
+}) |>  list_rbind() |>
+# Coalesce takes n columns, selects the highest value from each, and places those values into a singular column. In this case, where a value in a column was defined, all adjascent columns were NA. So, there is no possibility of overwriting a value. This transformation was simply to consolidate the data into a clean legible table.
+  mutate(label = coalesce(wbhao, female, educ, native, 'All')) |> 
+  pivot_wider(id_cols = year, 
+              names_from = label,
+              # names_prefix = '',
+              values_from = c(avgwage, medwage, wgt_n, n)) |> 
+  clean_names()
+
+
+# Table of all wage analyses
+# DMV wage analysis
+dmv_wages_all <- map(names(group_sets), function(nm) {
+  df <- wage_analysis_func_dmv(org, group_sets[[nm]])
+  df$grouping <- nm
+  df
+}) |>  list_rbind() |>
+# Coalesce takes n columns, selects the highest value from each, and places those values into a singular column. In this case, where a value in a column was defined, all adjascent columns were NA. So, there is no possibility of overwriting a value. This transformation was simply to consolidate the data into a clean legible table.
+  mutate(label = coalesce(wbhao, female, educ, native, 'All')) |> 
+  pivot_wider(id_cols = year, 
+              names_from = label,
+              # names_prefix = '',
+              values_from = c(avgwage, medwage, wgt_n, n)) |> 
+  clean_names()
+
+# DC wage analysis
+dc_wages_all <- map(names(group_sets), function(nm) {
+  df <- wage_analysis_func_dc(org, group_sets[[nm]])
+  df$grouping <- nm
+  df
+}) |>  list_rbind() |>
+# Coalesce takes n columns, selects the highest value from each, and places those values into a singular column. In this case, where a value in a column was defined, all adjascent columns were NA. So, there is no possibility of overwriting a value. This transformation was simply to consolidate the data into a clean legible table.
+  mutate(label = coalesce(wbhao, female, educ, native, 'All')) |> 
+  pivot_wider(id_cols = year, 
+              names_from = label,
+              # names_prefix = '',
+              values_from = c(avgwage, medwage, wgt_n, n)) |> 
+  clean_names()
+
+```
+
+##### Excel export
+
+```{r Excel export}
+
+dmv_wb <- createWorkbook()
+
+#Header and percent format
+pct = createStyle(numFmt = '0.0%')
+acct = createStyle(numFmt = '#,#0' )
+curr = createStyle(numFmt = 'CURRENCY')
+
+hs1 <- createStyle(fgFill = "#A31538", halign = "CENTER", textDecoration = "Bold",
+                   border = "Bottom", fontColour = "white")
+
+addWorksheet(dmv_wb, sheetName = "DMV Indicators")
+addWorksheet(dmv_wb, sheetName = "DC Indicators")
+addWorksheet(dmv_wb, sheetName = "DMV Indicators by age")
+addWorksheet(dmv_wb, sheetName = "DC Indicators by age")
+addWorksheet(dmv_wb, sheetName = "DMV wages")
+addWorksheet(dmv_wb, sheetName = "DC wages")
+addWorksheet(dmv_wb, sheetName = "Pop. dynamics DMV")
+addWorksheet(dmv_wb, sheetName = "Pop. dynamics DC")
+addWorksheet(dmv_wb, sheetName = "Fed worker emp")
+addWorksheet(dmv_wb, sheetName = "Detailed lfstat")
+
+
+writeData(dmv_wb, x=indicators_dmv_final, headerStyle = hs1, sheet = "DMV Indicators", startCol = 1, startRow = 1, colNames = TRUE)
+writeData(dmv_wb, x=indicators_age_dmv_final, headerStyle = hs1, sheet = "DMV Indicators by age", startCol = 1, startRow = 1, colNames = TRUE)
+writeData(dmv_wb, x=indicators_dc_final, headerStyle = hs1, sheet = "DC Indicators", startCol = 1, startRow = 1, colNames = TRUE)
+writeData(dmv_wb, x=indicators_age_dc_final, headerStyle = hs1, sheet = "DC Indicators by age", startCol = 1, startRow = 1, colNames = TRUE)
+writeData(dmv_wb, x=dmv_wages_all, headerStyle = hs1, sheet = "DMV wages", startCol = 1, startRow = 1, colNames = TRUE)
+writeData(dmv_wb, x=dc_wages_all, headerStyle = hs1, sheet = "DC wages", startCol = 1, startRow = 1, colNames = TRUE)
+writeData(dmv_wb, x=pop_dynamics_dmv, headerStyle = hs1, sheet = "Pop. dynamics DMV", startCol = 1, startRow = 1, colNames = TRUE)
+writeData(dmv_wb, x=pop_dynamics_dc, headerStyle = hs1, sheet = "Pop. dynamics DC", startCol = 1, startRow = 1, colNames = TRUE)
+writeData(dmv_wb, x=fed_workers, headerStyle = hs1, sheet = "Fed worker emp", startCol = 1, startRow = 1, colNames = TRUE)
+writeData(dmv_wb, x=detailed_lfstat, headerStyle = hs1, sheet = "Detailed lfstat", startCol = 1, startRow = 1, colNames = TRUE)
+
+
+# Add notes and sources
+
+writeData(dmv_wb, sheet="DMV Indicators", "Source: Economic Policy Institute. 2025. Current Population Survey Extracts, Version 2025.5.8, https://microdata.epi.org.", startCol=1, startRow=nrow(indicators_dmv_final)+4)
+
+writeData(dmv_wb, sheet="DMV wages", "Notes: Data refer to cbsafips 47900 (Washington-Arlington-Alexandria, DC-VA-MD-WV). Workers 16+, not self-employed or self-incorporated, full and part-time. Wage data are in 2024 dollars.", startCol=1, startRow=nrow(dmv_wages_all)+3)
+
+writeData(dmv_wb, sheet="DMV wages", "Source: Economic Policy Institute. 2025. Current Population Survey Extracts, Version 2025.5.8, https://microdata.epi.org, 2009–2024 and CPI-U annual data accessed via Zipperer B (2025). realtalk: Price index data for the US economy. R package version 2025.6.11, https://economic.github.io/realtalk/.", startCol=1, startRow=nrow(dmv_wages_all)+4)
+
+
+# Format numbers
+# addStyle(dmv_wb, "DMV Indicators", style=acct, cols=c(2:5, 7, 9, 10), rows=2:(nrow(all_workers_dmv)+1), gridExpand=TRUE)
+# addStyle(dmv_wb, "DMV Indicators", style=pct, cols=c(6, 8), rows=2:(nrow(all_workers_dmv)+1), gridExpand=TRUE)
+# # Prime age indicators
+# addStyle(dmv_wb, "DMV Indicators 25-54", style=acct, cols=c(2:4, 6, 8, 9), rows=2:(nrow(pa_indicators)+1), gridExpand=TRUE)
+# addStyle(dmv_wb, "DMV Indicators 25-54", style=pct, cols=c(5, 7), rows=2:(nrow(pa_indicators)+1), gridExpand=TRUE)
+
+# # wage cuts
+# addStyle(dmv_wb, "Wage cuts", style=curr, cols=c(2:31), rows=2:(nrow(dmv_wages_all)+1), gridExpand=TRUE)
+# addStyle(dmv_wb, "Wage cuts", style=acct, cols=c(32:61), rows=2:(nrow(dmv_wages_all)+1), gridExpand=TRUE)
+
+# # Demographic trends
+# addStyle(dmv_wb, "Pop. dynamics", style=acct, cols=c(2:3, 14:16), rows=2:(nrow(pop_dynamics)+1), gridExpand=TRUE)
+# addStyle(dmv_wb, "Pop. dynamics", style=pct, cols=c(4:13), rows=2:(nrow(pop_dynamics)+1), gridExpand=TRUE)
+
+# # Federal workers
+# addStyle(dmv_wb, "Fed worker emp", style=acct, cols=c(2:4), rows=2:(nrow(fed_workers)+1), gridExpand=TRUE)
+
+# # Detailed lfstat
+# addStyle(dmv_wb, "Detailed lfstat", style=acct, cols=c(2:8), rows=2:(nrow(detailed_lfstat)+1), gridExpand=TRUE)
+# addStyle(dmv_wb, "Detailed lfstat", style=pct, cols=c(9:22), rows=2:(nrow(detailed_lfstat)+1), gridExpand=TRUE)
+
+
+saveWorkbook(dmv_wb, here(paste0("output/DMV CPS data", format(Sys.time(), "_%d-%b-%Y %H.%M"), ".xlsx")), overwrite = TRUE)
+
+
+```

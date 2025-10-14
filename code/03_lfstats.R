@@ -37,7 +37,7 @@ lf_monthly_wide_with_metric <- function(
     # 12m rolling share = rolling SUM by label / rolling SUM total that month
     mutate(emp_share12 = emp12_sum / sum(emp12_sum, na.rm = TRUE), .by = date)|>
     # mask shares where 12m avg sample is too small
-    mutate(emp_share12 = if_else(is.na(sample12) | sample12 < 400,
+    mutate(emp_share12 = if_else(is.na(sample12) | sample12 < 300,
                                  NA_real_, emp_share12))
 
   # wide: one row per date, columns per label/metric

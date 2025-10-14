@@ -17,8 +17,6 @@ source('code/01_cps_data.R')
 
 source('code/02_popstats.R')
 
-source('code/dmv_indicators.qmd')
+source('code/03_lfstats.R')
 
-# This script is incomplete and very messy. I hoped to create a similar function as in 
-# 02_popstats.R to tabulate 12-month emp rates. Quarterly rates might suffice too
-# source('code/03_lfstats.R')
+source('code/dmv_indicators.qmd')

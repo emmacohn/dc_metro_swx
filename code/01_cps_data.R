@@ -6,12 +6,12 @@ cpi2024 <- cpi$cpi_u[cpi$year==2024]
 # Create basic dataframe
 basic <- load_basic(2019:2025, 
                     year, month, basicwgt, orgwgt, finalwgt,
-                    minsamp, statefips, cbsafips, wage, hoursu1i,
+                    minsamp, statefips, cbsafips, wage, hoursu1,
                     age, female, wbhao, educ, selfinc,
                     selfemp, lfstat, unemp, emp, nilf,
                     cow1, pubfed, citistat, pubsec,
                     # family and household vars
-                    hhid, famid, famtype, famrel, famwgt) |> s
+                    hhid, famid, famtype, famrel, famwgt) |>
   # Create date in yyyy-mm-dd format
   mutate(date = ymd(paste0(year,'-', month,'-1'))) |> 
   # Create foreign-born variable

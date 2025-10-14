@@ -4,7 +4,6 @@ format: html
 editor: visual
 ---
 
-
 ##### Sample size checks
 
 ```{r Sample size check}

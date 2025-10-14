@@ -58,7 +58,7 @@ pop_monthly_wide_with_metric <- function(
       .by = all_of(by_cols)
     ) |>
   # single-month share by date
-    mutate(pop_share = pop / sum(pop), .by = date) |>
+    mutate(emp_share = pop / sum(pop), .by = date) |>
   # roll per label
     unite("label", all_of(groups), sep = "-", remove = TRUE) |>
     arrange(label, date) |>

@@ -19,4 +19,8 @@ source('code/02_popstats.R')
 
 source('code/03_lfstats.R')
 
+source('code/04b_epops.R')
+
+source('code/05_wages.R')
+
 source('code/dmv_indicators.qmd')

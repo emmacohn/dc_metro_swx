@@ -1,10 +1,12 @@
+# load CPI data from realtalk
+# pulling in CPI-U-RS series, and also saving a copy to share
+cpi_data <- realtalk:: c_cpi_u_extended_annual
 
-#Load CPI data for inflation adjusting from realtalk
-cpi <- cpi_u_annual
-cpi2024 <- cpi$cpi_u[cpi$year==2024]
+# set base year to 2024
+cpi2024 <- cpi_data$c_cpi_u_extended[cpi_data$year==2024]
 
 # Create basic dataframe
-basic <- load_basic(2019:2025, 
+basic <- load_basic(2018:2025, 
                     year, month, basicwgt, orgwgt, finalwgt,
                     minsamp, statefips, cbsafips, wage, hoursu1,
                     age, female, wbhao, educ, selfinc,
@@ -45,7 +47,7 @@ basic <- load_basic(2019:2025,
   mutate(has_children = ifelse(childsize>0, yes=1, no=0))|> 
   add_value_labels(native = c('Native' = 1, 'Foreign-born'=0),
                   age_bin = c('0-15' = 0, '16–24' = 1, '25–54'=2, '55+'=3),
-                  has_children = c('Has children' = 1, 'No children' = 0)) |> 
+                  has_children = c('Has children' = 1, 'No children' = 0))|> 
        
     # create quarters
     mutate(quarter = case_match(
@@ -79,10 +81,7 @@ basic <- load_basic(2019:2025,
 org <- basic |>
   #Keep ORG months only
   filter(minsamp %in% c(4,8)) |> 
-  # Workers 16+, employed, not self-employed or self-incorporated.
-  filter(age >= 16, orgwgt > 0, selfemp == 0) |> 
-  # Join CPI-U data
-  left_join(cpi, by='year') |> 
-  # inflation adjust wage data
-  mutate(realwage = wage*(cpi2024/cpi_u))
+  # Workers 16+, not self-emp or self-inc, employed
+  filter(age >= 16, orgwgt > 0, selfemp !=1, selfinc !=1, emp == 1, cow1 <= 5)
 
+org_dmv <- org |> filter(cbsafips == 47900)
